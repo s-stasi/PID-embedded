@@ -103,11 +103,3 @@ Time(s), Mode,   Measurement, Output
 ## 📝 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-### Prossimo Passo consigliato per il tuo GitHub
-
-Aggiungi una cartella chiamata `examples/` e mettici dentro il file `main_test.c` che abbiamo scritto. In questo modo chiunque scarichi la libreria può testarla subito.
-
-**Cosa ne pensi di questa versione?** Se ti piace, sei pronto per fare il primo `git commit`!
