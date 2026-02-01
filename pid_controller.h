@@ -156,7 +156,7 @@ void PID_EnableAntiWindup(PID_Controller_t *pid, float minIntegral, float maxInt
   pid->max_integral = maxIntegral;
 }
 
-void PID_DisabeAntiWindup(PID_Controller_t *pid)
+void PID_DisableAntiWindup(PID_Controller_t *pid)
 {
   pid->anti_windup_en = false;
   pid->min_integral = 0;
