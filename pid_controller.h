@@ -67,6 +67,9 @@ extern "C"
    */
   void PID_Init(PID_Controller_t *pid, float kp, float ki, float kd, float out_min, float out_max, float dt, bool is_auto);
 
+  /** @brief Updates the PID controller with a new measurement and computes the output. */
+  void PID_SetGains(PID_Controller_t *pid, float kp, float ki, float kd);
+
   /**
    * @brief Computes the PID output.
    * @note Mark this with AT_QUICKACCESS_SECTION_CODE to run from SRAM_ITC at 600MHz.
@@ -94,7 +97,7 @@ extern "C"
    * @brief Sets the output value to be used in Manual mode and synchronizes the PID.
    * @param output The desired manual output (e.g., direct pedal torque).
    */
-  void PID_SetManualOutput(PID_Controller_t *pid, float manual_out);
+  void PID_SetManualOutput(PID_Controller_t *pid, float manual_out, float measurement);
 
   /** @brief Resets the internal state (integral and previous error). */
   void PID_Reset(PID_Controller_t *pid);
@@ -106,7 +109,7 @@ extern "C"
 
 #ifdef PID_CONTROLLER_IMPLEMENTATION
 
-void PID_Init(PID_Controller_t *pid, float kp, float ki, float kd, float out_min, float out_max,float dt, bool is_auto)
+void PID_Init(PID_Controller_t *pid, float kp, float ki, float kd, float out_min, float out_max, float dt, bool is_auto)
 {
   pid->kp = kp;
   pid->ki = ki;
@@ -124,6 +127,13 @@ void PID_Init(PID_Controller_t *pid, float kp, float ki, float kd, float out_min
   pid->anti_windup_en = false;
   pid->dt = dt;
   pid->is_auto = is_auto;
+}
+
+void PID_SetGains(PID_Controller_t *pid, float kp, float ki, float kd)
+{
+  pid->kp = kp;
+  pid->ki = ki;
+  pid->kd = kd;
 }
 
 float PID_Compute(PID_Controller_t *pid, float measurement)
@@ -210,18 +220,36 @@ void PID_SetMode(PID_Controller_t *pid, bool auto_mode)
   pid->is_auto = auto_mode;
 }
 
-void PID_SetManualOutput(PID_Controller_t *pid, float output)
+void PID_SetManualOutput(PID_Controller_t *pid, float output, float measurement)
 {
   pid->manual_output = output;
 
+  // If we are in manual mode, we do "Tracking" for a bumpless transfer
   if (!pid->is_auto)
   {
-    float error = pid->setpoint - 0;
+    // 1. Calculate the real error
+    float error = pid->setpoint - measurement;
+    
+    // 2. Calculate Proportional term
     float P = pid->kp * error;
-    float D = 0;
+    
+    // 3. Calculate Derivative term (to keep the filter state updated and avoid D-bumps)
+    float D = 0.0f;
+    if (pid->dt > 0.0f)
+    {
+      D = (error - pid->previous_error) / pid->dt;
+      if (pid->d_filter_en)
+      {
+        D = (pid->d_alpha * D) + ((1.0f - pid->d_alpha) * pid->prev_d_filtered);
+        pid->prev_d_filtered = D; // Update filter state
+      }
+      D = pid->kd * D;
+    }
 
+    // 4. Set the exact Integral value according to your handwritten math: I = U - P - D
     pid->integral = output - P - D;
 
+    // Apply anti-windup to the preloaded integral
     if (pid->anti_windup_en)
     {
       if (pid->integral > pid->max_integral)
@@ -229,6 +257,9 @@ void PID_SetManualOutput(PID_Controller_t *pid, float output)
       else if (pid->integral < pid->min_integral)
         pid->integral = pid->min_integral;
     }
+    
+    // Update the previous error for the next cycle
+    pid->previous_error = error;
   }
 }
 
