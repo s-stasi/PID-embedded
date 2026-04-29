@@ -1,6 +1,10 @@
 #include <stdio.h>
+#include <stdbool.h>
+#include <math.h>
+
 #define PID_CONTROLLER_IMPLEMENTATION
-#include "../pid_controller.h"
+#define GAIN_SCHEDULING_IMPLEMENTATION
+#include "../gain_scheduling.h"
 
 float simulate_motor(float current_speed, float torque, float dt) {
   const float friction = 0.1f;
@@ -10,47 +14,45 @@ float simulate_motor(float current_speed, float torque, float dt) {
 
 int main() {
   PID_Controller_t tc_pid;
+  GainSchedule_t schedule;
   float dt = 0.01f;
   float motor_speed = 0.0f;
-  float target_speed = 50.0f;
 
-  PID_Init(&tc_pid, 2.0f, 0.5f, 0.1f, 0.0f, 1000.0f, dt, true);
-  PID_EnableAntiWindup(&tc_pid, 0.0f, 1000.0f);
+  // Gain Scheduling Walls based on Asphalt Friction Coefficient (mu)
+  GainScheduleEntry_t entries[2] = {
+    {{1.0f, 0.1f, 0.0f}, 0.0f},   // Zone 0: Wet Asphalt (Low mu) -> Conservative
+    {{3.0f, 0.5f, 0.1f}, 0.5f}    // Zone 1: Dry Asphalt (High mu) -> Aggressive
+  };
+
+  // Hysteresis of 0.05 on the friction coefficient estimation
+  GainSchedule_Init(&schedule, entries, 2, 0.05f);
+  schedule.current_index = 1;
+
+  // New torque limits: -200 (Regenerative braking) to +400 (Traction)
+  PID_Init(&tc_pid, 3.0f, 0.5f, 0.1f, -200.0f, 400.0f, dt, true);
+  PID_EnableAntiWindup(&tc_pid, -200.0f, 200.0f);
   PID_SetDerivativeFilterHz(&tc_pid, 10.0f);
 
-  printf("Time(s), Mode, Setpoint, Measurement, Output\n");
+  printf("Time(s), Setpoint, Measurement, Output, Kp, Zone, Mu\n");
 
-  // Set the target speed BEFORE starting the manual phase
-  tc_pid.setpoint = target_speed;
-  PID_SetMode(&tc_pid, false);
-
-  for (int i = 0; i < 50; i++) {
+  for (int i = 0; i < 2000; i++) {
     float time = i * dt;
-    float manual_pedal_torque = 300.0f;
-    
-    // Motor physics update
 
-    motor_speed = simulate_motor(motor_speed, manual_pedal_torque, dt);
+    // The driver sets a cruise speed that oscillates
+    tc_pid.setpoint = 60.0f + 20.0f * cosf(2.0f * 3.14159f * 0.1f * time);
 
-    // Note: PID_SetManualOutput should ideally take 'motor_speed' as an argument
-    // to calculate the exact Integral preload needed for a bumpless transfer.
-    PID_SetManualOutput(&tc_pid, manual_pedal_torque, motor_speed);
-    
-    // PID_Compute returns manual_pedal_torque because is_auto is false
-    float output = PID_Compute(&tc_pid, motor_speed);
-    printf("%.2f, MANUAL, %.2f, %.2f, %.2f\n", time, tc_pid.setpoint, motor_speed, output);
-  }
+    // Simulated road condition: mu oscillates between 0.2 (Wet) and 0.8 (Dry)
+    float mu = 0.5f + 0.3f * sinf(2.0f * 3.14159f * 0.1f * time);
 
-  printf("--- SWITCH TO AUTO ---\n");
-  PID_SetMode(&tc_pid, true); 
-
-  for (int i = 50; i < 200; i++) {
-    float time = i * dt;
+    // We schedule the gains based on the surface friction, NOT speed
+    GainSchedule_Update(&tc_pid, &schedule, mu);
     
     float torque_out = PID_Compute(&tc_pid, motor_speed);
     motor_speed = simulate_motor(motor_speed, torque_out, dt);
-    
-    printf("%.2f, AUTO, %.2f, %.2f, %.2f\n", time, tc_pid.setpoint, motor_speed, torque_out);
+
+    printf("%.2f, %.2f, %.2f, %.2f, %.2f, %d, %.3f\n",
+           time, tc_pid.setpoint, motor_speed, torque_out,
+           tc_pid.kp, schedule.current_index, mu);
   }
 
   return 0;

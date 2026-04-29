@@ -45,10 +45,13 @@ extern "C"
   typedef struct {
     GainScheduleEntry_t *entries;
     uint16_t numEntries;
+    float histeresys;
+    float lastMeasurement;
+    uint16_t current_index;
   } GainSchedule_t;
 
-  void GainSchedule_Init(GainSchedule_t *schedule, GainScheduleEntry_t *entries, uint16_t numEntries);
-  void GainSchedule_InitPidController(PID_Controller_t *pid, GainSchedule_t *schedule, float initialMeasurement){
+  void GainSchedule_Init(GainSchedule_t *schedule, GainScheduleEntry_t *entries, uint16_t numEntries, float histeresys);
+  void GainSchedule_InitPidController(PID_Controller_t *pid, GainSchedule_t *schedule, float initialMeasurement);
   void GainSchedule_Update(PID_Controller_t *pid, GainSchedule_t *schedule, float measurement);
 
 #ifdef __cplusplus
@@ -57,15 +60,16 @@ extern "C"
 #endif // GAIN_SCHEDULING_H
 
 // Define only for testing purposes
-// #define GAIN_SCHEDULING_IMPLEMENTATION
+ #define GAIN_SCHEDULING_IMPLEMENTATION
 //
 
 #ifdef GAIN_SCHEDULING_IMPLEMENTATION
 
-void GainSchedule_Init(GainSchedule_t *schedule, GainScheduleEntry_t *entries, uint16_t numEntries)
+void GainSchedule_Init(GainSchedule_t *schedule, GainScheduleEntry_t *entries, uint16_t numEntries, float histeresys)
 {
   schedule->entries = entries;
   schedule->numEntries = numEntries;
+  schedule->histeresys = histeresys;
 }
 
 void GainSchedule_InitPidController(PID_Controller_t *pid, GainSchedule_t *schedule, float initialMeasurement){
@@ -81,19 +85,48 @@ void GainSchedule_Update(PID_Controller_t *pid, GainSchedule_t *schedule, float 
     return;
   }
 
-  uint16_t selected_index = schedule->numEntries - 1;
+  uint16_t target_index = schedule->numEntries - 1;
 
   for (uint16_t i = 1; i < schedule->numEntries; i++) {
-    if (measurement < schedule->entries[i].startsAtTarget) {
-      selected_index = i - 1;
+    float threshold = schedule->entries[i].startsAtTarget;
+    float effective_threshold = threshold;
+
+    // Logica di Isteresi basata sullo STATO (immune al rumore del sensore)
+    if (schedule->current_index < i) {
+      // Vogliamo "salire" (superare il muro verso destra). 
+      // Dobbiamo battere la soglia PIÙ l'isteresi per sbloccare la nuova zona.
+      effective_threshold += schedule->histeresys;
+    } else {
+      // Siamo già sopra, vogliamo "scendere" (tornare a sinistra).
+      // Dobbiamo scendere SOTTO la soglia MENO l'isteresi per ricadere.
+      effective_threshold -= schedule->histeresys;
+    }
+
+    if (measurement < effective_threshold) {
+      target_index = i - 1;
       break;
     }
   }
 
-  PID_SetGains(pid, 
-               schedule->entries[selected_index].gainSet.kp, 
-               schedule->entries[selected_index].gainSet.ki, 
-               schedule->entries[selected_index].gainSet.kd);
+  // Applichiamo i cambiamenti SOLO se abbiamo effettivamente cambiato zona
+  if (target_index != schedule->current_index) {
+    float new_kp = schedule->entries[target_index].gainSet.kp;
+    float new_ki = schedule->entries[target_index].gainSet.ki;
+    float new_kd = schedule->entries[target_index].gainSet.kd;
+
+    // Compensazione integrale anti-kick
+    float error = pid->setpoint - measurement;
+    pid->integral += (pid->kp - new_kp) * error;
+    
+    if (pid->anti_windup_en) {
+      if (pid->integral > pid->max_integral) pid->integral = pid->max_integral;
+      else if (pid->integral < pid->min_integral) pid->integral = pid->min_integral;
+    }
+
+    // Aggiorniamo i parametri e lo stato del PID
+    PID_SetGains(pid, new_kp, new_ki, new_kd);
+    schedule->current_index = target_index; // Aggiorniamo la memoria del Gain Schedule
+  }
 }
 
 #endif // GAIN_SCHEDULING_IMPLEMENTATION
